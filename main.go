@@ -122,45 +122,14 @@ func shouldIgnore(relPath string, info os.FileInfo, cfg Config) bool {
 	return false
 }
 
-// resolveTargetDir takes user input (raw string) and the executable directory.
-// It returns the absolute path of the target directory if found, else error.
-func resolveTargetDir(input string, exeDir string) (string, error) {
-	// Trim spaces just in case
-	input = strings.TrimSpace(input)
-	if input == "" {
-		// Empty input: use current working directory as fallback (or you could default to exeDir)
-		return os.Getwd()
-	}
-
-	// If it's already an absolute path, just check if it exists
-	if filepath.IsAbs(input) {
-		info, err := os.Stat(input)
-		if err != nil {
-			return "", fmt.Errorf("absolute path does not exist: %s", input)
+// isBinaryContent checks if data appears to be binary (contains null byte).
+func isBinaryContent(data []byte) bool {
+	for _, b := range data {
+		if b == 0 {
+			return true
 		}
-		if !info.IsDir() {
-			return "", fmt.Errorf("path is not a directory: %s", input)
-		}
-		return filepath.Abs(input) // clean up the path
 	}
-
-	// 1. Try relative to executable directory
-	absPathFromExe := filepath.Join(exeDir, input)
-	if info, err := os.Stat(absPathFromExe); err == nil && info.IsDir() {
-		return filepath.Abs(absPathFromExe)
-	}
-
-	// 2. Try relative to current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		cwd = "." // fallback
-	}
-	absPathFromCwd := filepath.Join(cwd, input)
-	if info, err := os.Stat(absPathFromCwd); err == nil && info.IsDir() {
-		return filepath.Abs(absPathFromCwd)
-	}
-
-	return "", fmt.Errorf("directory not found near executable or in current directory: %s", input)
+	return false
 }
 
 // buildFileTree recursively scans the directory and returns structure lines and file contents.
@@ -220,11 +189,57 @@ func buildFileTree(root string, cfg Config) (structure []string, contents []stri
 			return nil
 		}
 
+		// Automatic binary content detection
+		if isBinaryContent(data) {
+			fmt.Printf("%sSkipping binary file: %s%s\n", colorRed, relPath, colorReset)
+			return nil
+		}
+
 		fmt.Printf("%sAdded: %s%s\n", colorGreen, relPath, colorReset)
 		contents = append(contents, fmt.Sprintf("\n--- %s ---\n%s", relPath, string(data)))
 		return nil
 	})
 	return
+}
+
+// resolveTargetDir takes user input and tries to find the directory,
+// first relative to executable, then to current working directory.
+func resolveTargetDir(input string, exeDir string) (string, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		// Default: current working directory
+		return os.Getwd()
+	}
+
+	// Absolute path: validate and use
+	if filepath.IsAbs(input) {
+		info, err := os.Stat(input)
+		if err != nil {
+			return "", fmt.Errorf("absolute path does not exist: %s", input)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("path is not a directory: %s", input)
+		}
+		return filepath.Abs(input)
+	}
+
+	// 1. Try relative to executable directory
+	absFromExe := filepath.Join(exeDir, input)
+	if info, err := os.Stat(absFromExe); err == nil && info.IsDir() {
+		return filepath.Abs(absFromExe)
+	}
+
+	// 2. Try relative to current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	absFromCwd := filepath.Join(cwd, input)
+	if info, err := os.Stat(absFromCwd); err == nil && info.IsDir() {
+		return filepath.Abs(absFromCwd)
+	}
+
+	return "", fmt.Errorf("directory not found near executable or in current directory: %s", input)
 }
 
 func main() {
@@ -262,7 +277,6 @@ func main() {
 	dirInput, _ := reader.ReadString('\n')
 	dirInput = strings.TrimSpace(dirInput)
 
-	// Resolve with exeDir (already defined above)
 	targetDir, err := resolveTargetDir(dirInput, exeDir)
 	if err != nil {
 		fmt.Printf("%sError: %v%s\n", colorRed, err, colorReset)
@@ -271,7 +285,6 @@ func main() {
 
 	fmt.Printf("Scanning directory: %s\n", targetDir)
 	structure, contents, err := buildFileTree(targetDir, cfg)
-	
 	if err != nil {
 		fmt.Printf("%sError scanning: %v%s\n", colorRed, err, colorReset)
 		os.Exit(1)
